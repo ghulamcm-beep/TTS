@@ -1,0 +1,62 @@
+version: "3.9"
+
+services:
+  mongodb:
+    image: mongo:7.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: tts_service
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongo-init:
+    image: mongo:7.0
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    command: >
+      mongosh --host mongodb:27017 --eval
+      "rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongodb:27017'}]})"
+
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["-js"]
+
+  pulseaudio:
+    image: ghcr.io/mviereck/x11docker/x11docker-pulseaudio:latest
+    ports:
+      - "4713:4713"
+    environment:
+      - PULSE_SERVER=unix:/run/pulse/native
+    volumes:
+      - pulse_socket:/run/pulse
+
+  tts:
+    build: .
+    depends_on:
+      - mongodb
+      - nats
+      - pulseaudio
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/?replicaSet=rs0
+      MONGODB_DB: tts_service
+      NATS_URI: nats://nats:4222
+      PULSE_SERVER: unix:/run/pulse/native
+      VIRTUAL_MIC: virtual_mic
+      PIPER_MODEL_PATH: /app/models/piper/en_US-amy-medium.onnx
+    volumes:
+      - pulse_socket:/run/pulse
+
+volumes:
+  mongo_data:
+  pulse_socket:

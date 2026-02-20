@@ -1,0 +1,30 @@
+[project]
+name = "tts"
+version = "0.1.0"
+description = "Standalone TTS microservice using Piper TTS, MongoDB, NATS, and sounddevice"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "motor>=3.3.0",
+    "nats-py>=2.6.0",
+    "sounddevice>=0.4.6",
+    "pydantic>=2.5.0",
+    "numpy>=1.26.0",
+]
+
+[project.scripts]
+tts = "src.tts.main:main_sync"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.12.0",
+]
