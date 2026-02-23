@@ -1,6 +1,11 @@
 """TTS Service Configuration"""
 import os
 from dataclasses import dataclass
+from typing import Optional
+
+from dotenv import load_dotenv
+
+load_dotenv()  # must run before os.getenv() calls below
 
 
 @dataclass(frozen=True)
@@ -17,7 +22,12 @@ class Config:
     nats_interrupt_subject: str = "tts.interrupt"
     nats_max_reconnect_attempts: int = 5
 
-    # PulseAudio
+    # Audio device (optional — leave blank to use system default)
+    audio_device_id: Optional[int] = (
+        int(os.getenv("AUDIO_DEVICE_ID"))
+        if os.getenv("AUDIO_DEVICE_ID")
+        else None
+    )
     pulse_server: str = os.getenv("PULSE_SERVER", "unix:/run/user/1000/pulse/native")
     virtual_mic: str = os.getenv("VIRTUAL_MIC", "virtual_mic")
 

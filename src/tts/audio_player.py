@@ -1,4 +1,4 @@
-"""sounddevice audio player for PulseAudio virtual mic."""
+"""sounddevice audio player."""
 import asyncio
 import logging
 from typing import AsyncGenerator, Optional
@@ -12,14 +12,23 @@ logger = logging.getLogger(__name__)
 
 
 class AudioPlayer:
-    """Plays PCM audio chunks via sounddevice to PulseAudio."""
+    """Plays mono PCM audio chunks via sounddevice."""
 
     def __init__(self) -> None:
         self._stream: Optional[sd.OutputStream] = None
         self._is_playing = False
 
     def _get_device_id(self) -> Optional[int]:
-        """Get PulseAudio virtual_mic device ID, or None for default."""
+        """
+        Resolve output device:
+        1. AUDIO_DEVICE_ID env var (explicit override)
+        2. virtual_mic name match (Linux PulseAudio)
+        3. None → sounddevice system default
+        """
+        if config.audio_device_id is not None:
+            logger.info(f"Using configured audio device: {config.audio_device_id}")
+            return config.audio_device_id
+
         try:
             devices = sd.query_devices()
             for i, dev in enumerate(devices):
@@ -29,8 +38,18 @@ class AudioPlayer:
         except Exception as exc:
             logger.warning(f"Could not query audio devices: {exc}")
 
-        logger.warning("virtual_mic not found, using default output device")
+        logger.info("Using system default output device")
         return None
+
+    def _get_out_channels(self, device_id: Optional[int]) -> int:
+        """Return the number of output channels the device requires (min 1)."""
+        try:
+            info = sd.query_devices(device_id, kind="output")
+            ch = int(info["default_low_output_latency"] and info.get("max_output_channels", 1))
+            ch = int(info.get("max_output_channels", 1))
+            return max(1, min(ch, 2))  # cap at stereo
+        except Exception:
+            return 1
 
     async def play(
         self,
@@ -38,18 +57,22 @@ class AudioPlayer:
         stop_event: asyncio.Event,
     ) -> None:
         """
-        Play audio chunks from async generator.
+        Play mono PCM audio chunks from async generator.
 
-        Checks stop_event after each chunk for instant interruption (<50ms).
+        Automatically upmixes mono → stereo when the output device requires it.
+        Checks stop_event after each chunk for interruption.
         """
         device_id = self._get_device_id()
+        out_channels = self._get_out_channels(device_id)
+
+        logger.info(f"Opening audio stream: device={device_id} channels={out_channels}")
 
         self._stream = sd.OutputStream(
             device=device_id,
             samplerate=config.sample_rate,
-            channels=config.channels,
+            channels=out_channels,
             dtype=config.dtype,
-            blocksize=config.chunk_size // 2,  # samples, not bytes
+            blocksize=config.chunk_size // 2,
         )
         self._stream.start()
         self._is_playing = True
@@ -60,8 +83,20 @@ class AudioPlayer:
                     logger.info("Interrupt detected during playback")
                     break
 
-                audio_data = np.frombuffer(chunk, dtype=np.int16)
-                self._stream.write(audio_data)
+                # int16 alignment
+                if len(chunk) % 2:
+                    chunk = chunk[:-1]
+                if not chunk:
+                    continue
+
+                mono = np.frombuffer(chunk, dtype=np.int16)
+
+                if out_channels == 2:
+                    # upmix mono → stereo by duplicating the channel
+                    stereo = np.column_stack((mono, mono))
+                    self._stream.write(stereo)
+                else:
+                    self._stream.write(mono)
 
             logger.info("Playback complete")
 

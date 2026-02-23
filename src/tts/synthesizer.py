@@ -49,9 +49,11 @@ class ElevenLabsSynthesizer:
         Raises ElevenLabsError subclasses on API failures.
         Raises ElevenLabsNetworkError on connection/timeout failures.
         """
+        # output_format is a query parameter, not a body field
         url = (
             f"{config.elevenlabs_base_url}"
             f"/v1/text-to-speech/{config.elevenlabs_voice_id}/stream"
+            f"?output_format={config.elevenlabs_output_format}"
         )
         headers = {
             "xi-api-key": config.elevenlabs_api_key,
@@ -60,7 +62,6 @@ class ElevenLabsSynthesizer:
         body = {
             "text": text,
             "model_id": config.elevenlabs_model_id,
-            "output_format": config.elevenlabs_output_format,
         }
 
         logger.info(

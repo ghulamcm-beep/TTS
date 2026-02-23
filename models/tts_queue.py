@@ -42,6 +42,8 @@ class TranscriptDocument(BaseModel):
     speaker: str  # "agent" | "candidate"
     text: str
     audio_url: Optional[str] = None
+    audio_data: Optional[bytes] = None   # raw PCM bytes (pcm_22050) once played
+    audio_format: Optional[str] = None  # "pcm_22050"
     timestamp: Optional[datetime] = None
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "arbitrary_types_allowed": True}

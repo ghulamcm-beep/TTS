@@ -60,29 +60,59 @@ class TTSService:
             # Process one transcript at a time — no concurrent synthesis
             await self._process_transcript(doc)
 
+    @staticmethod
+    async def _buffered(source, buffer: list):
+        """Tee an async generator: yield each chunk and accumulate in buffer."""
+        async for chunk in source:
+            buffer.append(chunk)
+            yield chunk
+
+    @staticmethod
+    async def _chunks_from_bytes(data: bytes):
+        """Yield PCM bytes in chunk_size pieces (for DB cache playback)."""
+        for i in range(0, len(data), config.chunk_size):
+            yield data[i : i + config.chunk_size]
+
     async def _process_transcript(self, doc: TranscriptDocument) -> None:
-        """Synthesize and play a single agent transcript."""
+        """Synthesize (or replay from DB cache), play, and save audio."""
         logger.info(
             f"Processing transcript: interview={doc.interview_id} chars={len(doc.text)}"
         )
 
         try:
-            audio_chunks = self._synthesizer.synthesize(doc.text)
-            await self._player.play(audio_chunks, self._interrupt_handler.stop_event)
+            if doc.audio_data:
+                # --- Cache hit: play from DB, no ElevenLabs call ---
+                logger.info(
+                    f"Playing from DB cache: {doc.id} "
+                    f"({len(doc.audio_data) / 1024:.1f} KB)"
+                )
+                await self._player.play(
+                    self._chunks_from_bytes(doc.audio_data),
+                    self._interrupt_handler.stop_event,
+                )
+                await self._transcript_updater.mark_played(doc.id, doc.audio_data)
+            else:
+                # --- Cache miss: call ElevenLabs, buffer while streaming ---
+                audio_buffer: list[bytes] = []
+                raw_chunks = self._synthesizer.synthesize(doc.text)
+                teed = self._buffered(raw_chunks, audio_buffer)
+                await self._player.play(teed, self._interrupt_handler.stop_event)
 
-            # Always mark as played regardless of interrupt — audio was handled
-            await self._transcript_updater.mark_played(doc.id)
+                audio_data = b"".join(audio_buffer) if audio_buffer else None
+                await self._transcript_updater.mark_played(doc.id, audio_data)
+                if audio_data:
+                    logger.info(
+                        f"Transcript completed: {doc.id} "
+                        f"audio saved {len(audio_data) / 1024:.1f} KB"
+                    )
 
             if self._interrupt_handler.stop_event.is_set():
                 logger.info(f"Transcript interrupted: {doc.id}")
-            else:
-                logger.info(f"Transcript completed: {doc.id}")
 
         except Exception as exc:
             logger.error(f"Transcript processing failed: {doc.id} — {exc}")
-            # Still mark as played to unblock main-agent
             try:
-                await self._transcript_updater.mark_played(doc.id)
+                await self._transcript_updater.mark_played(doc.id, None)
             except Exception as update_exc:
                 logger.error(f"Failed to mark transcript as played: {update_exc}")
 
