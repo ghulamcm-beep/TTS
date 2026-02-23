@@ -26,6 +26,22 @@ services:
       mongosh --host mongodb:27017 --eval
       "try { rs.status() } catch(e) { rs.initiate({_id:'rs0', members:[{_id:0, host:'mongodb:27017'}]}) }"
 
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["-js"]
+
+  pulseaudio:
+    image: ghcr.io/mviereck/x11docker/x11docker-pulseaudio:latest
+    ports:
+      - "4713:4713"
+    environment:
+      - PULSE_SERVER=unix:/run/pulse/native
+    volumes:
+      - pulse_socket:/run/pulse
+
   tts:
     build: .
     env_file:
@@ -35,18 +51,19 @@ services:
       MONGODB_URI: mongodb://mongodb:27017/?replicaSet=rs0
       MONGODB_DB: interviews
       TRANSCRIPTS_COLLECTION: transcripts
-      # NATS is optional — remove or leave empty to disable interrupt feature
-      NATS_URI: ""
-      # Audio: blank = system default; set to device ID for specific output
-      AUDIO_DEVICE_ID: ""
+      NATS_URI: nats://nats:4222
+      PULSE_SERVER: unix:/run/pulse/native
+      VIRTUAL_MIC: virtual_mic
     depends_on:
       mongodb:
         condition: service_healthy
-    # For Linux audio output via PulseAudio:
-    # volumes:
-    #   - /run/user/1000/pulse:/run/pulse
-    # environment:
-    #   PULSE_SERVER: unix:/run/pulse/native
+      nats:
+        condition: service_started
+      pulseaudio:
+        condition: service_started
+    volumes:
+      - pulse_socket:/run/pulse
 
 volumes:
   mongo_data:
+  pulse_socket:
