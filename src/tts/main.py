@@ -8,12 +8,12 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from .config import config
 from .logging_config import setup_logging
-from .tts_queue import TTSQueueListener
-from .synthesizer import PiperSynthesizer
+from .tts_queue import TranscriptListener
+from .synthesizer import ElevenLabsSynthesizer
 from .audio_player import AudioPlayer
 from .interrupt_handler import InterruptHandler
-from .status_updater import StatusUpdater
-from models.tts_queue import TTSStatus
+from .status_updater import TranscriptUpdater
+from models.tts_queue import TranscriptDocument
 
 logger = logging.getLogger(__name__)
 
@@ -23,63 +23,77 @@ class TTSService:
 
     def __init__(self) -> None:
         self._mongo_client = AsyncIOMotorClient(config.mongodb_uri)
-        self._queue_listener = TTSQueueListener(self._mongo_client)
-        self._synthesizer = PiperSynthesizer()
+        self._transcript_listener = TranscriptListener(self._mongo_client)
+        self._synthesizer = ElevenLabsSynthesizer()
         self._player = AudioPlayer()
         self._interrupt_handler = InterruptHandler()
-        self._status_updater = StatusUpdater(self._mongo_client)
+        self._transcript_updater = TranscriptUpdater(self._mongo_client)
         self._running = False
+        self._nats_enabled = False
 
     async def start(self) -> None:
         """Start TTS service."""
         logger.info("Starting TTS Service...")
 
-        await self._interrupt_handler.connect()
+        # NATS is optional — if unavailable, interrupt feature is silently disabled
+        if config.nats_uri:
+            try:
+                await self._interrupt_handler.connect()
+                self._nats_enabled = True
+                logger.info("NATS interrupt feature enabled")
+            except Exception as exc:
+                logger.warning(
+                    f"NATS unavailable ({exc}) — interrupt feature disabled"
+                )
+        else:
+            logger.info("NATS_URI not set — interrupt feature disabled")
+
         self._running = True
 
-        async for doc in self._queue_listener.watch():
+        async for doc in self._transcript_listener.watch():
             if not self._running:
                 break
 
             # Reset interrupt flag for new utterance
             await self._interrupt_handler.reset()
 
-            # Process task (one at a time — no concurrent synthesis)
-            await self._process_task(doc)
+            # Process one transcript at a time — no concurrent synthesis
+            await self._process_transcript(doc)
 
-    async def _process_task(self, doc) -> None:
-        """Process a single TTS task end-to-end."""
-        logger.info(f"Processing task: {doc.id} | session: {doc.session_id}")
+    async def _process_transcript(self, doc: TranscriptDocument) -> None:
+        """Synthesize and play a single agent transcript."""
+        logger.info(
+            f"Processing transcript: interview={doc.interview_id} chars={len(doc.text)}"
+        )
 
         try:
-            await self._status_updater.set_status(doc.id, TTSStatus.PLAYING)
-
             audio_chunks = self._synthesizer.synthesize(doc.text)
             await self._player.play(audio_chunks, self._interrupt_handler.stop_event)
 
+            # Always mark as played regardless of interrupt — audio was handled
+            await self._transcript_updater.mark_played(doc.id)
+
             if self._interrupt_handler.stop_event.is_set():
-                await self._status_updater.set_status(doc.id, TTSStatus.INTERRUPTED)
-                logger.info(f"Task interrupted: {doc.id}")
+                logger.info(f"Transcript interrupted: {doc.id}")
             else:
-                await self._status_updater.set_status(doc.id, TTSStatus.COMPLETED)
-                logger.info(f"Task completed: {doc.id}")
+                logger.info(f"Transcript completed: {doc.id}")
 
         except Exception as exc:
-            logger.error(f"Task failed: {doc.id} — {exc}")
+            logger.error(f"Transcript processing failed: {doc.id} — {exc}")
+            # Still mark as played to unblock main-agent
             try:
-                await self._status_updater.set_status(
-                    doc.id, TTSStatus.FAILED, str(exc)
-                )
+                await self._transcript_updater.mark_played(doc.id)
             except Exception as update_exc:
-                logger.error(f"Failed to update status: {update_exc}")
+                logger.error(f"Failed to mark transcript as played: {update_exc}")
 
     async def stop(self) -> None:
         """Stop TTS service gracefully."""
         logger.info("Stopping TTS Service...")
         self._running = False
 
-        await self._interrupt_handler.close()
-        await self._queue_listener.close()
+        if self._nats_enabled:
+            await self._interrupt_handler.close()
+        await self._transcript_listener.close()
         await self._synthesizer.close()
         self._mongo_client.close()
         logger.info("TTS Service stopped")

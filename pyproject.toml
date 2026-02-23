@@ -1,7 +1,7 @@
 [project]
 name = "tts"
 version = "0.1.0"
-description = "Standalone TTS microservice using Piper TTS, MongoDB, NATS, and sounddevice"
+description = "Standalone TTS microservice using ElevenLabs, MongoDB, NATS, and sounddevice"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -10,6 +10,7 @@ dependencies = [
     "sounddevice>=0.4.6",
     "pydantic>=2.5.0",
     "numpy>=1.26.0",
+    "httpx>=0.27.0",
 ]
 
 [project.scripts]

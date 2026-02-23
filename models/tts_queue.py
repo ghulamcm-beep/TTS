@@ -1,7 +1,7 @@
 """TTS Queue MongoDB Schema"""
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 from pydantic import BaseModel, Field
 import uuid
 
@@ -32,3 +32,16 @@ class TTSQueueDocument(BaseModel):
         "populate_by_name": True,
         "json_encoders": {datetime: lambda v: v.isoformat()},
     }
+
+
+class TranscriptDocument(BaseModel):
+    """MongoDB document schema for interviews.transcripts collection."""
+
+    id: Any = Field(alias="_id")
+    interview_id: str
+    speaker: str  # "agent" | "candidate"
+    text: str
+    audio_url: Optional[str] = None
+    timestamp: Optional[datetime] = None
+
+    model_config = {"populate_by_name": True}

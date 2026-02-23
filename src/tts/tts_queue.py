@@ -1,34 +1,42 @@
-"""MongoDB change stream listener for TTS queue."""
+"""MongoDB change stream listener for interviews.transcripts."""
 import asyncio
 import logging
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from .config import config
-from models.tts_queue import TTSQueueDocument, TTSStatus
+from models.tts_queue import TranscriptDocument
 
 logger = logging.getLogger(__name__)
 
 
-class TTSQueueListener:
-    """Watches MongoDB tts_queue for new documents via change streams."""
+class TranscriptListener:
+    """Watches interviews.transcripts for agent utterances to synthesize."""
 
     def __init__(self, mongo_client: AsyncIOMotorClient) -> None:
         self.db = mongo_client[config.mongodb_db]
-        self.collection = self.db[config.tts_queue_collection]
+        self.collection = self.db[config.transcripts_collection]
         self._change_stream = None
         self._closed = False
 
-    async def watch(self) -> AsyncGenerator[TTSQueueDocument, None]:
+    async def watch(self) -> AsyncGenerator[TranscriptDocument, None]:
         """
-        Watch for new TTS queue documents.
+        Watch for new agent transcript documents without audio_url.
 
-        Yields parsed TTSQueueDocument on insert with status=pending.
+        Yields TranscriptDocument on insert where speaker=agent and audio_url=null.
         Reconnects automatically on transient errors.
         """
-        pipeline = [{"$match": {"operationType": "insert"}}]
-        retry_delay = 1.0
+        pipeline = [
+            {
+                "$match": {
+                    "operationType": "insert",
+                    "fullDocument.speaker": "agent",
+                    "fullDocument.audio_url": None,
+                }
+            }
+        ]
+        retry_delay = config.mongo_retry_base_delay
         max_retries = config.mongo_max_retries
 
         for attempt in range(max_retries):
@@ -37,30 +45,34 @@ class TTSQueueListener:
                     pipeline,
                     full_document="updateLookup",
                 )
-                logger.info("Watching MongoDB tts_queue for new documents")
-                retry_delay = 1.0  # reset on success
+                logger.info(
+                    f"Watching {config.mongodb_db}.{config.transcripts_collection} "
+                    "for agent utterances"
+                )
+                retry_delay = config.mongo_retry_base_delay  # reset on success
 
                 async for change in self._change_stream:
                     if self._closed:
                         return
                     try:
-                        full_doc = change.get("fullDocument") or change.get("fullDocument")
+                        full_doc = change.get("fullDocument")
                         if not full_doc:
                             continue
-                        doc = TTSQueueDocument.model_validate(full_doc)
-                        if doc.status == TTSStatus.PENDING:
-                            logger.info(
-                                f"New TTS task: {doc.id} (session: {doc.session_id})"
-                            )
-                            yield doc
+                        doc = TranscriptDocument.model_validate(full_doc)
+                        logger.info(
+                            f"New transcript: interview={doc.interview_id} "
+                            f"chars={len(doc.text)}"
+                        )
+                        yield doc
                     except Exception as exc:
-                        logger.error(f"Error parsing queue document: {exc}")
+                        logger.error(f"Error parsing transcript document: {exc}")
 
             except Exception as exc:
                 if self._closed:
                     return
                 logger.warning(
-                    f"MongoDB change stream error (attempt {attempt + 1}/{max_retries}): {exc}"
+                    f"MongoDB change stream error "
+                    f"(attempt {attempt + 1}/{max_retries}): {exc}"
                 )
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 30.0)  # exponential backoff

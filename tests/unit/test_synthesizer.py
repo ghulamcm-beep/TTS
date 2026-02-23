@@ -1,64 +1,170 @@
-"""Unit tests: Piper TTS synthesizer."""
-import asyncio
+"""Unit tests: ElevenLabs TTS synthesizer."""
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, AsyncMock
+from contextlib import asynccontextmanager
+
+import httpx
 
 
-class TestPiperSynthesizer:
-    """Tests for PiperSynthesizer subprocess management."""
+class TestElevenLabsSynthesizer:
+    """Tests for ElevenLabsSynthesizer httpx streaming."""
 
     @pytest.fixture
     def synthesizer(self):
-        from src.tts.synthesizer import PiperSynthesizer
-        return PiperSynthesizer()
-
-    def test_initial_state(self, synthesizer):
-        assert synthesizer._process is None
-        assert synthesizer._restart_count == 0
+        from src.tts.synthesizer import ElevenLabsSynthesizer
+        return ElevenLabsSynthesizer()
 
     @pytest.mark.asyncio
-    async def test_ensure_piper_starts_when_none(self, synthesizer):
-        mock_process = MagicMock()
-        mock_process.returncode = None
-        with patch.object(synthesizer, "_start_piper", return_value=mock_process) as mock_start:
-            await synthesizer._ensure_piper_running()
-            mock_start.assert_called_once()
-            assert synthesizer._process is mock_process
-            assert synthesizer._restart_count == 1
-
-    @pytest.mark.asyncio
-    async def test_ensure_piper_restarts_on_crash(self, synthesizer):
-        crashed_process = MagicMock()
-        crashed_process.returncode = 1  # non-None means crashed
-        synthesizer._process = crashed_process
-
-        new_process = MagicMock()
-        new_process.returncode = None
-        with patch.object(synthesizer, "_start_piper", return_value=new_process):
-            await synthesizer._ensure_piper_running()
-            assert synthesizer._process is new_process
-
-    @pytest.mark.asyncio
-    async def test_max_restarts_raises(self, synthesizer):
-        synthesizer._restart_count = synthesizer._max_restarts
-        synthesizer._process = None
-
-        with pytest.raises(RuntimeError, match="giving up"):
-            await synthesizer._ensure_piper_running()
-
-    @pytest.mark.asyncio
-    async def test_close_terminates_process(self, synthesizer):
-        mock_process = AsyncMock()
-        mock_process.returncode = None
-        synthesizer._process = mock_process
+    async def test_close_is_noop(self, synthesizer):
+        """close() should not raise — no persistent resources."""
         await synthesizer.close()
-        mock_process.terminate.assert_called_once()
-        mock_process.wait.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_close_skips_if_already_terminated(self, synthesizer):
-        mock_process = AsyncMock()
-        mock_process.returncode = 0  # already terminated
-        synthesizer._process = mock_process
-        await synthesizer.close()
-        mock_process.terminate.assert_not_called()
+    async def test_synthesize_yields_chunks(self, synthesizer):
+        """synthesize() yields bytes chunks from streaming response."""
+        fake_chunks = [b"\x00" * 4096, b"\x01" * 2048]
+
+        mock_response = AsyncMock()
+        mock_response.status_code = 200
+
+        async def fake_aiter_bytes(chunk_size=None):
+            for chunk in fake_chunks:
+                yield chunk
+
+        mock_response.aiter_bytes = fake_aiter_bytes
+
+        @asynccontextmanager
+        async def fake_stream(*args, **kwargs):
+            yield mock_response
+
+        mock_client = AsyncMock()
+        mock_client.stream = fake_stream
+
+        @asynccontextmanager
+        async def fake_async_client(*args, **kwargs):
+            yield mock_client
+
+        with patch("src.tts.synthesizer.httpx.AsyncClient", fake_async_client):
+            collected = []
+            async for chunk in synthesizer.synthesize("Hello"):
+                collected.append(chunk)
+
+        assert collected == fake_chunks
+
+    @pytest.mark.asyncio
+    async def test_synthesize_raises_auth_error_on_401(self, synthesizer):
+        """401 response raises ElevenLabsAuthError."""
+        from src.tts.exceptions import ElevenLabsAuthError
+
+        mock_response = AsyncMock()
+        mock_response.status_code = 401
+
+        @asynccontextmanager
+        async def fake_stream(*args, **kwargs):
+            yield mock_response
+
+        mock_client = AsyncMock()
+        mock_client.stream = fake_stream
+
+        @asynccontextmanager
+        async def fake_async_client(*args, **kwargs):
+            yield mock_client
+
+        with patch("src.tts.synthesizer.httpx.AsyncClient", fake_async_client):
+            with pytest.raises(ElevenLabsAuthError):
+                async for _ in synthesizer.synthesize("Hello"):
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_synthesize_raises_rate_limit_on_429(self, synthesizer):
+        """429 response raises ElevenLabsRateLimitError."""
+        from src.tts.exceptions import ElevenLabsRateLimitError
+
+        mock_response = AsyncMock()
+        mock_response.status_code = 429
+
+        @asynccontextmanager
+        async def fake_stream(*args, **kwargs):
+            yield mock_response
+
+        mock_client = AsyncMock()
+        mock_client.stream = fake_stream
+
+        @asynccontextmanager
+        async def fake_async_client(*args, **kwargs):
+            yield mock_client
+
+        with patch("src.tts.synthesizer.httpx.AsyncClient", fake_async_client):
+            with pytest.raises(ElevenLabsRateLimitError):
+                async for _ in synthesizer.synthesize("Hello"):
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_synthesize_raises_server_error_on_500(self, synthesizer):
+        """5xx response raises ElevenLabsServerError."""
+        from src.tts.exceptions import ElevenLabsServerError
+
+        mock_response = AsyncMock()
+        mock_response.status_code = 503
+
+        @asynccontextmanager
+        async def fake_stream(*args, **kwargs):
+            yield mock_response
+
+        mock_client = AsyncMock()
+        mock_client.stream = fake_stream
+
+        @asynccontextmanager
+        async def fake_async_client(*args, **kwargs):
+            yield mock_client
+
+        with patch("src.tts.synthesizer.httpx.AsyncClient", fake_async_client):
+            with pytest.raises(ElevenLabsServerError):
+                async for _ in synthesizer.synthesize("Hello"):
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_synthesize_raises_network_error_on_timeout(self, synthesizer):
+        """httpx.TimeoutException is wrapped as ElevenLabsNetworkError."""
+        from src.tts.exceptions import ElevenLabsNetworkError
+
+        @asynccontextmanager
+        async def fake_async_client(*args, **kwargs):
+            raise httpx.TimeoutException("timeout")
+            yield  # make it a generator
+
+        with patch("src.tts.synthesizer.httpx.AsyncClient", fake_async_client):
+            with pytest.raises(ElevenLabsNetworkError):
+                async for _ in synthesizer.synthesize("Hello"):
+                    pass
+
+
+class TestRaiseForStatus:
+    """Tests for the _raise_for_status helper."""
+
+    def _make_response(self, status_code: int) -> MagicMock:
+        r = MagicMock()
+        r.status_code = status_code
+        return r
+
+    def test_401_raises_auth_error(self):
+        from src.tts.synthesizer import _raise_for_status
+        from src.tts.exceptions import ElevenLabsAuthError
+        with pytest.raises(ElevenLabsAuthError):
+            _raise_for_status(self._make_response(401))
+
+    def test_429_raises_rate_limit(self):
+        from src.tts.synthesizer import _raise_for_status
+        from src.tts.exceptions import ElevenLabsRateLimitError
+        with pytest.raises(ElevenLabsRateLimitError):
+            _raise_for_status(self._make_response(429))
+
+    def test_500_raises_server_error(self):
+        from src.tts.synthesizer import _raise_for_status
+        from src.tts.exceptions import ElevenLabsServerError
+        with pytest.raises(ElevenLabsServerError):
+            _raise_for_status(self._make_response(500))
+
+    def test_200_does_not_raise(self):
+        from src.tts.synthesizer import _raise_for_status
+        _raise_for_status(self._make_response(200))  # should not raise
