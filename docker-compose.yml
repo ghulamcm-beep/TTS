@@ -8,7 +8,7 @@ services:
     volumes:
       - mongo_data:/data/db
     environment:
-      MONGO_INITDB_DATABASE: tts_service
+      MONGO_INITDB_DATABASE: interviews
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
@@ -21,42 +21,32 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
+    restart: "no"
     command: >
       mongosh --host mongodb:27017 --eval
-      "rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongodb:27017'}]})"
-
-  nats:
-    image: nats:2.10-alpine
-    ports:
-      - "4222:4222"
-      - "8222:8222"
-    command: ["-js"]
-
-  pulseaudio:
-    image: ghcr.io/mviereck/x11docker/x11docker-pulseaudio:latest
-    ports:
-      - "4713:4713"
-    environment:
-      - PULSE_SERVER=unix:/run/pulse/native
-    volumes:
-      - pulse_socket:/run/pulse
+      "try { rs.status() } catch(e) { rs.initiate({_id:'rs0', members:[{_id:0, host:'mongodb:27017'}]}) }"
 
   tts:
     build: .
-    depends_on:
-      - mongodb
-      - nats
-      - pulseaudio
+    env_file:
+      - .env
     environment:
+      # Override .env values with container-internal addresses
       MONGODB_URI: mongodb://mongodb:27017/?replicaSet=rs0
-      MONGODB_DB: tts_service
-      NATS_URI: nats://nats:4222
-      PULSE_SERVER: unix:/run/pulse/native
-      VIRTUAL_MIC: virtual_mic
-      PIPER_MODEL_PATH: /app/models/piper/en_US-amy-medium.onnx
-    volumes:
-      - pulse_socket:/run/pulse
+      MONGODB_DB: interviews
+      TRANSCRIPTS_COLLECTION: transcripts
+      # NATS is optional — remove or leave empty to disable interrupt feature
+      NATS_URI: ""
+      # Audio: blank = system default; set to device ID for specific output
+      AUDIO_DEVICE_ID: ""
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    # For Linux audio output via PulseAudio:
+    # volumes:
+    #   - /run/user/1000/pulse:/run/pulse
+    # environment:
+    #   PULSE_SERVER: unix:/run/pulse/native
 
 volumes:
   mongo_data:
-  pulse_socket:

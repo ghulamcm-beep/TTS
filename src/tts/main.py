@@ -92,11 +92,19 @@ class TTSService:
                 )
                 await self._transcript_updater.mark_played(doc.id, doc.audio_data)
             else:
-                # --- Cache miss: call ElevenLabs, buffer while streaming ---
+                # --- Cache miss: synthesize from ElevenLabs ---
                 audio_buffer: list[bytes] = []
                 raw_chunks = self._synthesizer.synthesize(doc.text)
                 teed = self._buffered(raw_chunks, audio_buffer)
-                await self._player.play(teed, self._interrupt_handler.stop_event)
+
+                try:
+                    await self._player.play(teed, self._interrupt_handler.stop_event)
+                except Exception as audio_exc:
+                    # Audio device unavailable (e.g. inside a container) —
+                    # drain the generator so the buffer is still filled
+                    logger.warning(f"Audio playback unavailable: {audio_exc} — synthesizing to DB only")
+                    async for _ in teed:
+                        pass
 
                 audio_data = b"".join(audio_buffer) if audio_buffer else None
                 await self._transcript_updater.mark_played(doc.id, audio_data)
