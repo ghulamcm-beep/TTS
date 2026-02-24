@@ -21,13 +21,20 @@ class AudioPlayer:
     def _get_device_id(self) -> Optional[int]:
         """
         Resolve output device:
-        1. AUDIO_DEVICE_ID env var (explicit override)
+        1. AUDIO_DEVICE_ID env var (validated — skipped if device not usable)
         2. virtual_mic name match (Linux PulseAudio)
         3. None → sounddevice system default
         """
         if config.audio_device_id is not None:
-            logger.info(f"Using configured audio device: {config.audio_device_id}")
-            return config.audio_device_id
+            try:
+                sd.query_devices(config.audio_device_id, kind="output")
+                logger.info(f"Using configured audio device: {config.audio_device_id}")
+                return config.audio_device_id
+            except Exception as exc:
+                logger.warning(
+                    f"Configured device {config.audio_device_id} unavailable ({exc})"
+                    " — falling back to system default"
+                )
 
         try:
             devices = sd.query_devices()
