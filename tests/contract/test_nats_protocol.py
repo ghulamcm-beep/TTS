@@ -31,7 +31,11 @@ class TestNATSProtocol:
 
     def test_nats_uri_format(self):
         from src.tts.config import config
-        assert config.nats_uri.startswith("nats://")
+        # NATS is optional; when configured it must use the nats:// scheme
+        if config.nats_uri:
+            assert config.nats_uri.startswith("nats://")
+        else:
+            pytest.skip("NATS_URI not configured — interrupt feature disabled")
 
     def test_max_reconnect_attempts_positive(self):
         from src.tts.config import config

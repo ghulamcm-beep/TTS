@@ -14,38 +14,51 @@ pytestmark = pytest.mark.asyncio
 class TestErrorRecovery:
     """Tests for error recovery and reconnection logic."""
 
-    async def test_synthesizer_resets_after_success(self):
-        """restart_count resets to 0 after successful synthesis."""
-        from src.tts.synthesizer import PiperSynthesizer
+    async def test_synthesizer_stateless_after_error(self):
+        """ElevenLabsSynthesizer is stateless — a second call succeeds after a prior failure."""
+        from contextlib import asynccontextmanager
+        from unittest.mock import patch
+        import httpx
+        from src.tts.synthesizer import ElevenLabsSynthesizer
+        from src.tts.exceptions import ElevenLabsNetworkError
 
-        synth = PiperSynthesizer()
-        synth._restart_count = 2  # simulated previous crashes
+        synth = ElevenLabsSynthesizer()
+        call_count = 0
 
-        mock_process = AsyncMock()
-        mock_process.returncode = None
-        mock_process.stdin = AsyncMock()
-        mock_process.stdin.write = MagicMock()
-        mock_process.stdin.drain = AsyncMock()
+        @asynccontextmanager
+        async def fake_async_client(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise httpx.NetworkError("simulated failure")
+            mock_client = AsyncMock()
+            mock_response = AsyncMock()
+            mock_response.status_code = 200
 
-        # Simulate one chunk then timeout
-        read_call_count = 0
+            async def fake_aiter_bytes(chunk_size=None):
+                yield b"\x00" * 100
 
-        async def mock_read(n):
-            nonlocal read_call_count
-            if read_call_count == 0:
-                read_call_count += 1
-                return b"\x00" * n
-            raise asyncio.TimeoutError()
+            mock_response.aiter_bytes = fake_aiter_bytes
 
-        mock_process.stdout = AsyncMock()
-        mock_process.stdout.read = mock_read
+            @asynccontextmanager
+            async def fake_stream(*args, **kwargs):
+                yield mock_response
 
-        with patch.object(synth, "_start_piper", return_value=mock_process):
+            mock_client.stream = fake_stream
+            yield mock_client
+
+        with patch("src.tts.synthesizer.httpx.AsyncClient", fake_async_client):
+            # First call raises network error
+            with pytest.raises(ElevenLabsNetworkError):
+                async for _ in synth.synthesize("first"):
+                    pass
+
+            # Second call succeeds — synthesizer carries no failure state
             chunks = []
-            async for chunk in synth.synthesize("test"):
+            async for chunk in synth.synthesize("second"):
                 chunks.append(chunk)
 
-        assert synth._restart_count == 0  # reset on success
+        assert chunks == [b"\x00" * 100]
 
     async def test_nats_interrupt_handler_resilient_to_empty_data(self):
         """Handler does not crash on empty NATS message."""
