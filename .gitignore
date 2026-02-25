@@ -46,3 +46,8 @@ models/piper/*.onnx.json
 
 # Docker
 *.dockerignore
+
+# Markdown files
+.mds/
+.venv/
+/model

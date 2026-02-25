@@ -49,14 +49,13 @@ class AudioPlayer:
         return None
 
     def _get_out_channels(self, device_id: Optional[int]) -> int:
-        """Return the number of output channels the device requires (min 1)."""
+        """Return the number of output channels the device supports (capped at stereo)."""
         try:
             info = sd.query_devices(device_id, kind="output")
-            ch = int(info["default_low_output_latency"] and info.get("max_output_channels", 1))
-            ch = int(info.get("max_output_channels", 1))
+            ch = int(info.get("max_output_channels", 2))
             return max(1, min(ch, 2))  # cap at stereo
         except Exception:
-            return 1
+            return 2  # stereo is the safe default for most output devices
 
     async def play(
         self,
@@ -74,13 +73,33 @@ class AudioPlayer:
 
         logger.info(f"Opening audio stream: device={device_id} channels={out_channels}")
 
-        self._stream = sd.OutputStream(
-            device=device_id,
-            samplerate=config.sample_rate,
-            channels=out_channels,
-            dtype=config.dtype,
-            blocksize=config.chunk_size // 2,
-        )
+        try:
+            self._stream = sd.OutputStream(
+                device=device_id,
+                samplerate=config.sample_rate,
+                channels=out_channels,
+                dtype=config.dtype,
+                blocksize=config.chunk_size // 2,
+            )
+        except Exception as exc:
+            if device_id is not None:
+                logger.warning(
+                    f"Device {device_id} failed to open ({exc})"
+                    " — retrying with system default"
+                )
+                device_id = None
+                out_channels = self._get_out_channels(None)
+                logger.info(f"Opening audio stream: device=default channels={out_channels}")
+                self._stream = sd.OutputStream(
+                    device=None,
+                    samplerate=config.sample_rate,
+                    channels=out_channels,
+                    dtype=config.dtype,
+                    blocksize=config.chunk_size // 2,
+                )
+            else:
+                raise
+
         self._stream.start()
         self._is_playing = True
 
