@@ -50,4 +50,4 @@ models/piper/*.onnx.json
 # Markdown files
 .mds/
 .venv/
-/model
+model/
